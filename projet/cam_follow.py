@@ -91,14 +91,13 @@ class LineFollowing(Node):
         # s'il y a des points blancs.
         y_raies = range(10, crop_h - 10, 10)
 
+        direction = self.get_parameter('roundabout_dir').get_parameter_value().string_value
         # on chope le centre du masque vert 
         centre_vert = self.get_line_centres(masque_vert, y_raies)
         centre_rouge = self.get_line_centres(masque_rouge, y_raies)
 
         chemin_x = []
         chemin_y = []
-
-        direction = self.get_parameter('roundabout_dir').get_parameter_value().string_value
 
         for y in y_raies:
             # on récup pour chaque raie y la valeur moyenne associée à la clé y dans le dictionnaire récup juste au dessus
@@ -135,9 +134,9 @@ class LineFollowing(Node):
         cible_x = self.last_cible_x
         futur_y = int(crop_h * 0.3)
 
-        if len(chemin_y) >= 4:
+        if len(chemin_y) >= 3:
             # on calcule un polynome de degré 3 qui passe par les points du chemin x,y
-            poly = np.polyfit(chemin_y, chemin_x, 3)
+            poly = np.polyfit(chemin_y, chemin_x, 2)
             
             # ensuite on demande la valeur de x, la prochaine cible, en y_futur pour l'anticipation 
             cible_x = np.polyval(poly, futur_y)
@@ -183,6 +182,8 @@ class LineFollowing(Node):
         draw_y = crop_top + futur_y if len(chemin_y) >= 3 else crop_top + int(crop_h/2)
         cv2.circle(cv_image, (int(cible_x), draw_y), 7, (255, 0, 0), -1)
 
+        masque_total = cv2.bitwise_or(masque_vert, masque_rouge)
+        cv2.imshow("masque", masque_total)
         cv2.imshow("Vue du robot", cv_image)
         cv2.waitKey(1)
 

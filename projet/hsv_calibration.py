@@ -51,7 +51,7 @@ class HSVCalibration(Node):
         masque = cv2.inRange(hsv, limite_inf, limite_sup)
         # avec cette dernière fonction, on demande de ne faire ressortir que les pixels à la fois présent sur 
         # l'image d'origine ET ceux activés à 1 sur le masque.
-        resultat = cv2.bitwise_and(cv_image, cv_image, masque=masque)
+        resultat = cv2.bitwise_and(cv_image, cv_image, mask=masque)
 
         cv2.imshow('Original', cv_image)
         cv2.imshow('Masque', masque)

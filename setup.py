@@ -26,6 +26,7 @@ setup(
             'suivi = projet.cam_follow:main' ,
             'lds_data = projet.lds_data:main' ,
             'hsv = projet.hsv_calibration:main',
+            'STOP = projet.em_stop:main',
         ],
     },
 )

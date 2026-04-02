@@ -22,8 +22,10 @@ setup(
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
-        'console_scripts': ['suivi = projet.cam_follow:main',
-        'hsv = projet.hsv_calibration:main',
+        'console_scripts': [
+            'suivi = projet.cam_follow:main' ,
+            'lds_data = projet.lds_data:main' ,
+            'hsv = projet.hsv_calibration:main',
         ],
     },
 )

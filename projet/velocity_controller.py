@@ -32,9 +32,15 @@ class ControllerNode(Node):
         self.sensorMsg = LaserScan()
         self.controlMsg = Twist()
 
-        #self.message = copy.deepcopy(Float32MultiArray())
         #Timer Initialisation 
         self.timer = self.create_timer(0.05, self.computeVelocity)
+
+        #Controller Parameters
+        self.ka = 0.2
+        self.kr = 20
+        self.maximum_repulsive_force_distance = 0.5
+
+        self.k_angle = 0.5
 
     def odom_callback(self,msg):
         self.odomMsg = msg
@@ -55,12 +61,26 @@ class ControllerNode(Node):
 
         return roll,pitch,yaw
     
+    def angular_error(self, current_angle, desired_angle):
+        #Determines the shortest path to take to achieve the desired orientation for the robot
+
+        if (desired_angle > np.pi/2) and (desired_angle <= np.pi):
+            if (current_angle > -np.pi) and (current_angle <= -np.pi/2):
+                current_angle += 2*np.pi
+        
+        if (current_angle > np.pi/2) and (current_angle <= np.pi):
+            if (desired_angle > -np.pi) and (desired_angle <= -np.pi/2):
+                desired_angle += 2*np.pi
+
+        error = desired_angle - current_angle
+        return error
+
     def get_Robot_Pose(self):
         #Gives back the estimation of the robot position in the fixed frame and it's orientation [-pi,pi]
         robotPos = self.odomMsg.pose.pose.position
         robotOrient = self.odomMsg.pose.pose.orientation
 
-        roll, pitch, yaw = self.quaternions_to_euler_angle(robotOrient) #Orientation in rad/s
+        roll, pitch, yaw = self.quaternions_to_euler_angle(robotOrient) #Orientation in rad
         return robotPos, yaw
 
     
@@ -106,14 +126,63 @@ class ControllerNode(Node):
             xo.append(xRobot + min_objects_distances[i]*np.cos(min_objects_distances_angles[i]+robotOrientation))
             yo.append(yRobot + min_objects_distances[i]*np.sin(min_objects_distances_angles[i]+robotOrientation))
 
+        """
         for i in range(len(xo)):
-            print("Object ", i+1, " coordinates: ", xo[i], yo[i])
+            print("Object ", i+1, " coordinates: ", xo[i] - xRobot, yo[i] - yRobot)
+        """
+
         return xo,yo
         
 
     def computeVelocity(self):
         rPos, rOrient = self.get_Robot_Pose()
-        self.detect_Obstacles(rPos,rOrient)
+        xObjects,yObjects = self.detect_Obstacles(rPos,rOrient)
+
+        xRobot = rPos.x
+        yRobot = rPos.y
+        posRobot = np.array([xRobot,yRobot])
+
+        #Attractive Force Generation:
+        #To have an attractive force, there needs to be an objective for the robot to follow, for the time being, it's a point that always 0.25m infront of it.
+        point_distance = 0.25 #m
+        x_desired = xRobot + point_distance*np.cos(rOrient)
+        y_desired = yRobot + point_distance*np.sin(rOrient)
+        desired_Point = np.array([x_desired, y_desired])
+
+        attractionForce = - self.ka*(posRobot - desired_Point)
+
+        #Repulsive force generation
+        repulsiveForce = np.zeros(2,)
+        for i in range(len(xObjects)):
+            objPos = np.array([xObjects[i],yObjects[i]])
+            distance = np.linalg.norm(posRobot - objPos)
+            if(distance <= self.maximum_repulsive_force_distance):
+                forceNorm = self.kr*((1/self.maximum_repulsive_force_distance) -(1/distance))*(1/(distance)**2)
+                repulsiveForce -= forceNorm*(posRobot - objPos)
+
+        controlForce = attractionForce + repulsiveForce
+
+        goal_Orientation = np.arctan2(controlForce[1],controlForce[0])
+        
+        angleError = self.angular_error(rOrient,goal_Orientation)
+
+        angular_velocity = self.k_angle*angleError
+        linear_velocity = np.linalg.norm(controlForce)
+        if(np.abs(linear_velocity) > 2.0):
+            linear_velocity = 2.0
+        
+        #print(linear_velocity)
+        #print(angular_velocity)
+
+        self.controlMsg.linear.x = linear_velocity
+        self.controlMsg.linear.y = 0.0
+        self.controlMsg.linear.z = 0.0
+        self.controlMsg.angular.x = 0.0
+        self.controlMsg.angular.y = 0.0
+        self.controlMsg.angular.z = angular_velocity
+        
+        self.controlPublisher.publish(self.controlMsg)
+
 
 def main(args=None):
     try:

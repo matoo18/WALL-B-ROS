@@ -23,34 +23,20 @@ class LineFollowing(Node):
 
         self.is_searching = False
 
-    def get_line_centres(self, masque, y_raies, direction):
+    def get_line_centre(self, masque, y_raies, direction):
         centres = {}
         for y in y_raies:
+            # je regarde la ligne y dans toute sa longueur
             l = masque[y, :]
+            # là où les valeurs dans la liste sont >0 ça veut dire qu'il y a du vert (ou rouge en fonction du masque doné)
+            # [0] parce que np.where renvoie un tableau bizarre.
             indices = np.where(l > 0)[0]
-            
+            # s'il n'y a pas de pixels blancs sur la ligne alors on passe sinon on calcule la moyenne de la position des
+            # pixels et on met ça dans la liste des centres qui permettront de tracer la trajectoire à suivre
             if len(indices) > 0:
-                # Si la distance entre 2 pixels est sup à 20 pixels on considère que 
-                # c'est une autre ligne et donc un autre paquet de pixel
-                diffs = np.diff(indices)
-                split_points = np.where(diffs > 20)[0] + 1
-                paquets = np.split(indices, split_points)
-                
-                # On garde que les gros paquets
-                paquets = [c for c in paquets if len(c) > 5]
-                
-                if len(paquets) == 0:
-                    continue
-                
-                # tri des paquets de pixels de gauche à droite
-                paquets = sorted(paquets, key=lambda c: np.mean(c))
-            
-                if direction == 'right':
-                    centres[y] = int(np.mean(paquets[-1]))
-                elif direction == 'left':
-                    centres[y] = int(np.mean(paquets[0]))
+                centres[y] = int(np.mean(indices))
         return centres
-
+        
     def masque_creation(self, crop_image):
         # on passe en hsv meilleure saturation
         hsv_image = cv2.cvtColor(crop_image, cv2.COLOR_BGR2HSV)
@@ -114,7 +100,7 @@ class LineFollowing(Node):
         # 2. EXTRACTION DES COORDONNÉES DES LIGNES
         # =================================================================
 
-        # utilisation de la fonciton get_line_centres pour récupérer le centre des lignes isolées précédemment.
+        # utilisation de la fonciton get_line_centre pour récupérer le centre des lignes isolées précédemment.
         # d'abord on créé des raies horizontales d'un pixel de large tous les 10 pixels sur lesquelles on regardera 
         # s'il y a des points blancs.
         y_raies = range(10, crop_h - 10, 10)
@@ -122,8 +108,8 @@ class LineFollowing(Node):
         direction = self.get_parameter('roundabout_dir').get_parameter_value().string_value
 
         # on chope le centre du masque vert 
-        centre_vert = self.get_line_centres(masque_vert, y_raies, direction)
-        centre_rouge = self.get_line_centres(masque_rouge, y_raies, direction)
+        centre_vert = self.get_line_centre(masque_vert, y_raies, direction)
+        centre_rouge = self.get_line_centre(masque_rouge, y_raies, direction)
 
         # =================================================================
         # 3. CALCUL DE LA TRAJECTOIRE ET DE LA CIBLE
@@ -146,12 +132,12 @@ class LineFollowing(Node):
                 if ecart < (self.memoire_ligne_width * 0.6):
                     if direction == 'right':
                         # On veut passer à droite : on place la cible virtuellement à DROITE du rouge de l'îlot
-                        vx = x_rouge + (self.memoire_ligne_width / 2.0)
+                        vx = x_rouge + (self.memoire_ligne_width)
                     else:
                         # On veut passer à gauche : on place la cible virtuellement à GAUCHE du vert de l'îlot
-                        vx = x_vert - (self.memoire_ligne_width / 2.0)
+                        vx = x_vert - (self.memoire_ligne_width)
                 else:
-                    alpha = 0.3
+                    alpha = 0.5
                     # inspiré du RL, plutot que de brutalement changer la valeur de la dernière largeur de passage mesurée, 
                     # on fait une sorte de bootstrapping pour faire une sorte de moyenne glissante.
                     self.memoire_ligne_width = alpha * (x_rouge - x_vert) + (1 - alpha) * self.memoire_ligne_width
@@ -187,6 +173,10 @@ class LineFollowing(Node):
             cible_x = np.polyval(poly, futur_y)
             self.last_cible_x = cible_x
 
+            # affichage des points permettant l'interpolation
+            for cx, cy in zip(chemin_x, chemin_y):
+                cv2.circle(cv_image, (int(cx), int(cy) + crop_top), 4, (0, 255, 0), -1) 
+
             # pour l'affichage de ma super ligne à l'écran
             pts = []
             for y in range(0, crop_h, 5):
@@ -220,11 +210,7 @@ class LineFollowing(Node):
         # On publie la commande (qu'elle soit issue du mode perdu ou normal)
         self.publisher_.publish(twist)
 
-        # un peu de dessin pour la beautéééééé
         cv2.line(cv_image, (0, crop_top), (width, crop_top), (0, 0, 0), 2)
-        draw_y = crop_top + futur_y if len(chemin_y) >= 3 else crop_top + int(crop_h/2)
-        cv2.circle(cv_image, (int(cible_x), draw_y), 7, (0, 255, 255), -1)
-
         masque_total = cv2.bitwise_or(masque_vert, masque_rouge)
         cv2.imshow("masque", masque_total)
         cv2.imshow("Vue du robot", cv_image)

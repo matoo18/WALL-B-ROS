@@ -2,18 +2,21 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import CompressedImage
+from geometry_msgs.msg import Point
+from std_msgs.msg import Bool
 import cv2
 import numpy as np
 
-class LineFollowing(Node):
+class VisionNode(Node):
     def __init__(self):
         super().__init__('LineFollowing')
         # on s'abonne au topic qui publie les images compressées reçues de la caméra
         self.image_subscription = self.create_subscription(CompressedImage,'/image_raw/compressed',self.image_callback,10)
 
         # Cration du publisher pour pouvoir publier les vitesses sur le topic /cmd_vel
-        self.publisher_ = self.create_publisher(Twist, '/cmd_vel', 10)
-
+        self.targetPublisher = self.create_publisher(Point, '/vision_target', 10)
+        self.challengePublisher = self.create_publisher(Bool, '/switch_challenge', 10)
+        
         # attributs de mémoire qui seront utiles lorsqu'une ligne disparaitra du champs de vision de la caméra
         self.memoire_ligne_width = 300.0
         self.last_cible_x = 160.0
@@ -23,7 +26,7 @@ class LineFollowing(Node):
 
         self.is_searching = False
 
-    def get_line_centre(self, masque, y_raies, direction):
+    def get_line_centre(self, masque, y_raies):
         centres = {}
         for y in y_raies:
             # je regarde la ligne y dans toute sa longueur
@@ -42,6 +45,13 @@ class LineFollowing(Node):
         hsv_image = cv2.cvtColor(crop_image, cv2.COLOR_BGR2HSV)
 
         # création des masques, on a utilisé le noeud hsv_calibration avec les trackbars pour trouver les valeurs
+        bas_bleu = np.array([90, 25, 0])
+        haut_bleu = np.array([150, 255, 255])
+        masque_bleu = cv2.inRange(hsv_image, bas_bleu, haut_bleu)
+
+        kernel_horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 3))
+        masque_bleu = cv2.morphologyEx(masque_bleu, cv2.MORPH_OPEN, kernel_horiz)
+
         bas_vert = np.array([40, 30, 10])
         haut_vert = np.array([90, 255, 255])
         masque_vert = cv2.inRange(hsv_image, bas_vert, haut_vert)
@@ -69,7 +79,7 @@ class LineFollowing(Node):
 
         masque_rouge = cv2.morphologyEx(masque_rouge, cv2.MORPH_CLOSE, kernel)
         masque_rouge = cv2.morphologyEx(masque_rouge, cv2.MORPH_OPEN, kernel)
-        return masque_rouge, masque_vert
+        return masque_rouge, masque_vert, masque_bleu
 
     def image_callback(self, msg):
         # =================================================================
@@ -91,7 +101,19 @@ class LineFollowing(Node):
         crop_top = int(height * 0.5) # on peut jouer sur 0.5 pour voir à quel point on peut anticiper
         crop_image = cv_image[crop_top:height, :]
 
-        masque_rouge, masque_vert = self.masque_creation(crop_image)
+        masque_rouge, masque_vert, masque_bleu = self.masque_creation(crop_image)
+
+        nb_pixels_bleus = cv2.countNonZero(masque_bleu)
+        
+        msg_blue = Bool()
+        # Si on a plus de 200 pixels bleus horizontaux, on considère la ligne franchie
+        if nb_pixels_bleus > 200:
+            msg_blue.data = True
+            cv2.putText(cv_image, "LIGNE BLEUE DETECTEE!", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        else:
+            msg_blue.data = False
+            
+        self.challengePublisher.publish(msg_blue)
 
         # on récup les nouvelles height et width de l'image cropée on les a déjà mais bon c'est pour al lisibilité on va dire
         crop_h, crop_w = crop_image.shape[:2]
@@ -108,8 +130,8 @@ class LineFollowing(Node):
         direction = self.get_parameter('roundabout_dir').get_parameter_value().string_value
 
         # on chope le centre du masque vert 
-        centre_vert = self.get_line_centre(masque_vert, y_raies, direction)
-        centre_rouge = self.get_line_centre(masque_rouge, y_raies, direction)
+        centre_vert = self.get_line_centre(masque_vert, y_raies)
+        centre_rouge = self.get_line_centre(masque_rouge, y_raies)
 
         # =================================================================
         # 3. CALCUL DE LA TRAJECTOIRE ET DE LA CIBLE
@@ -185,30 +207,17 @@ class LineFollowing(Node):
             pts = np.array(pts, np.int32)
             pts = pts.reshape((-1, 1, 2))
             cv2.polylines(cv_image, [pts], False, (0, 255, 255), 2)
-        
-        # =================================================================
-        # 4. GESTION DU MODE PERDU ET COMMANDE DU ROBOT
-        # =================================================================
 
-        cam_centre = crop_w / 2.0
 
-        if len(chemin_y) < 3:
-            # Si pas assez de points pour tracer une trajectoire fiable
-            twist.linear.x = 0.05
-            twist.angular.z = 0.
-            # affichage pour voir s'il rentre ici
-            cv2.putText(cv_image, "PERDU - RECHERCHE", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        else:
-            error_x = cam_centre - cible_x
-            kp_x = 0.005
-            angular = float(error_x * kp_x)
+        # on publie tout dans un point mais c'est jutste que j'ai trouvé que c'était la structure la plus simple
+        # comme ça on envoire ls 3 infos importantes, à savoir : la cible calculée à partir du polynome, le centre de la caméra pour 
+        # pouvoir calculer l'erreur après et un booléen pour savoir si on utilise le mode perdu ou pas en cas de manque de point pour l'interpolation
+        target_msg = Point()
+        target_msg.x = float(cible_x)
+        target_msg.y = float(crop_w / 2.0) # On envoie le centre de la caméra aussi
+        target_msg.z = 1.0 if len(chemin_y) >= 3 else 0.0 
 
-            # On ralentit la vitesse linéaire quand il tourne pour plus de stabilité
-            twist.linear.x = max(0.05, 0.15 - 0.5 * abs(angular))
-            twist.angular.z = angular
-
-        # On publie la commande (qu'elle soit issue du mode perdu ou normal)
-        self.publisher_.publish(twist)
+        self.targetPublisher.publish(target_msg)
 
         cv2.line(cv_image, (0, crop_top), (width, crop_top), (0, 0, 0), 2)
         masque_total = cv2.bitwise_or(masque_vert, masque_rouge)
@@ -216,9 +225,12 @@ class LineFollowing(Node):
         cv2.imshow("Vue du robot", cv_image)
         cv2.waitKey(1)
 
+    def challenge_callback(self, msg):
+        pass
+
 def main(args=None):
     rclpy.init(args=args)
-    node = LineFollowing()
+    node = VisionNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

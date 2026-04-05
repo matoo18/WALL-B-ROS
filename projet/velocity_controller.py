@@ -9,13 +9,12 @@ import numpy as np
 #Messages needed
 from nav_msgs.msg import Odometry #Odometry (Current Robot Position)
 from sensor_msgs.msg import LaserScan #Lidar Messages
-from geometry_msgs.msg import Twist #Twist Message for velocity control
+from geometry_msgs.msg import Twist, Point #Twist Message for velocity control
 
 #from std_msgs.msg import Float32MultiArray
 
 import math
 import time
-
 
 class ControllerNode(Node):
 
@@ -26,11 +25,17 @@ class ControllerNode(Node):
         self.controlPublisher = self.create_publisher(Twist, '/cmd_vel', 10) #Command Publisher
         self.odometrySubscriber = self.create_subscription(Odometry, '/odom', self.odom_callback,10)
         self.sensorSubscriber = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        self.visionSubscriber = self.create_subscription(Point, '/vision_target', self.vision_callback, 10)
 
         #Messages Init
         self.odomMsg = Odometry()
         self.sensorMsg = LaserScan()
         self.controlMsg = Twist()
+
+        # Données de la vision
+        self.vision_cible_x = 160.0
+        self.vision_cam_centre = 160.0
+        self.vision_is_tracking = False
 
         #Timer Initialisation 
         self.timer = self.create_timer(0.05, self.computeVelocity)
@@ -47,6 +52,11 @@ class ControllerNode(Node):
 
     def scan_callback(self,msg):
         self.sensorMsg = msg
+
+    def vision_callback(self, msg):
+        self.vision_cible_x = msg.x
+        self.vision_cam_centre = msg.y
+        self.vision_is_tracking = bool(msg.z == 1.0)
 
     def quaternions_to_euler_angle(self, quaternion):
         #Converts a given quaternion to euler angles
@@ -83,7 +93,6 @@ class ControllerNode(Node):
         roll, pitch, yaw = self.quaternions_to_euler_angle(robotOrient) #Orientation in rad
         return robotPos, yaw
 
-    
     def detect_Obstacles(self, robotPos, robotOrientation):
         #Discriminates the obstacles in range of the LIDAR, it gives the smallest distance detected by a ray and the angle alpha of the ray in reference to the robot.
         start_angle = self.sensorMsg.angle_min
@@ -133,7 +142,6 @@ class ControllerNode(Node):
 
         return xo,yo
         
-
     def computeVelocity(self):
         rPos, rOrient = self.get_Robot_Pose()
         xObjects,yObjects = self.detect_Obstacles(rPos,rOrient)
@@ -142,15 +150,29 @@ class ControllerNode(Node):
         yRobot = rPos.y
         posRobot = np.array([xRobot,yRobot])
 
-        #Attractive Force Generation:
-        #To have an attractive force, there needs to be an objective for the robot to follow, for the time being, it's a point that always 0.25m infront of it.
-        point_distance = 0.25 #m
-        x_desired = xRobot + point_distance*np.cos(rOrient)
-        y_desired = yRobot + point_distance*np.sin(rOrient)
-        desired_Point = np.array([x_desired, y_desired])
+        # #Attractive Force Generation:
+        # #To have an attractive force, there needs to be an objective for the robot to follow, for the time being, it's a point that always 0.25m infront of it.
+        # point_distance = 0.25 #m
+        # x_desired = xRobot + point_distance*np.cos(rOrient)
+        # y_desired = yRobot + point_distance*np.sin(rOrient)
+        # desired_Point = np.array([x_desired, y_desired])
 
-        attractionForce = - self.ka*(posRobot - desired_Point)
+        # attractionForce = - self.ka*(posRobot - desired_Point)
 
+        # j'ai essayé de combiner nos 2 codes en modifiant uniquement ta variable d'attraction pour essayer de la modifiée dynamiquement avec mon topic
+        # de suivi de ligne mais ça marche pas pour l'instant mdr.
+        # On calcule l'angle désiré depuis l'erreur visuelle
+        error_x = self.vision_cam_centre - self.vision_cible_x
+        vision_angular = float(error_x * 0.005)
+        
+        # On place notre aimant d'attraction dans la direction de la courbe
+        point_distance = 0.25 
+        desired_angle = rOrient + vision_angular
+        desired_Point = np.array([rPos.x + point_distance * np.cos(desired_angle),
+                                    rPos.y + point_distance * np.sin(desired_angle)])
+
+        attractionForce = - self.ka * (posRobot - desired_Point)
+        
         #Repulsive force generation
         repulsiveForce = np.zeros(2,)
         for i in range(len(xObjects)):

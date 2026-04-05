@@ -23,8 +23,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'suivi = projet.cam_follow:main' ,
-            'lds_data = projet.lds_data:main' ,
+            'omniscience = projet.vision_node:main',
+            'suivi = projet.line_follower_controller:main' ,
+            'lds_data = projet.lds_data:main',
             'obstacle = projet.velocity_controller:main' ,
             'hsv = projet.hsv_calibration:main',
             'STOP = projet.em_stop:main',

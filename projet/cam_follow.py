@@ -21,36 +21,37 @@ class LineFollowing(Node):
         # on déclare un paramètre pour pouvoir choisir dans quel sens prendre le rond-point
         self.declare_parameter('roundabout_dir', 'right')
 
-    def get_line_centres(self, masque, y_raies):
+        self.is_searching = False
+
+    def get_line_centres(self, masque, y_raies, direction):
         centres = {}
         for y in y_raies:
-            # je regarde la ligne y dans toute sa longueur
             l = masque[y, :]
-            # là où les valeurs dans la liste sont >0 ça veut dire qu'il y a du vert (ou rouge en fonction du masque doné)
-            # [0] parce que np.where renvoie un tableau bizarre.
             indices = np.where(l > 0)[0]
-            # s'il n'y a pas de pixels blancs sur la ligne alors on passe sinon on calcule la moyenne de la position des
-            # pixels et on met ça dans la liste des centres qui permettront de tracer la trajectoire à suivre
+            
             if len(indices) > 0:
-                centres[y] = int(np.mean(indices))
+                # Si la distance entre 2 pixels est sup à 20 pixels on considère que 
+                # c'est une autre ligne et donc un autre paquet de pixel
+                diffs = np.diff(indices)
+                split_points = np.where(diffs > 20)[0] + 1
+                paquets = np.split(indices, split_points)
+                
+                # On garde que les gros paquets
+                paquets = [c for c in paquets if len(c) > 5]
+                
+                if len(paquets) == 0:
+                    continue
+                
+                # tri des paquets de pixels de gauche à droite
+                paquets = sorted(paquets, key=lambda c: np.mean(c))
+            
+                if direction == 'right':
+                    centres[y] = int(np.mean(paquets[-1]))
+                elif direction == 'left':
+                    centres[y] = int(np.mean(paquets[0]))
         return centres
 
-    def image_callback(self, msg):
-        # conversion pour la lecture
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-        if cv_image is None:
-            return
-
-        # on prend les dimensions qui permettront de croper l'image pour ne garder que le bas de celle-ci
-        # pour ne pas que l'algo ne prenne en compte les lignes lointaines trop tot
-        height, width, _ = cv_image.shape
-
-        # jeu de mot drole
-        crop_top = int(height * 0.5) # on peut jouer sur 0.5 pour voir à quel point on peut anticiper
-        crop_image = cv_image[crop_top:height, :]
-
+    def masque_creation(self, crop_image):
         # on passe en hsv meilleure saturation
         hsv_image = cv2.cvtColor(crop_image, cv2.COLOR_BGR2HSV)
 
@@ -82,9 +83,36 @@ class LineFollowing(Node):
 
         masque_rouge = cv2.morphologyEx(masque_rouge, cv2.MORPH_CLOSE, kernel)
         masque_rouge = cv2.morphologyEx(masque_rouge, cv2.MORPH_OPEN, kernel)
+        return masque_rouge, masque_vert
 
-        # on récup les nouvelles height et width de l'image cropée
+    def image_callback(self, msg):
+        # =================================================================
+        # 1. ACQUISITION ET PRÉTRAITEMENT DE L'IMAGE
+        # =================================================================
+
+        # conversion pour la lecture
+        np_arr = np.frombuffer(msg.data, np.uint8)
+        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if cv_image is None:
+            return
+
+        # on prend les dimensions qui permettront de croper l'image pour ne garder que le bas de celle-ci
+        # pour ne pas que l'algo ne prenne en compte les lignes lointaines trop tot
+        height, width, _ = cv_image.shape
+
+        # jeu de mot drole
+        crop_top = int(height * 0.5) # on peut jouer sur 0.5 pour voir à quel point on peut anticiper
+        crop_image = cv_image[crop_top:height, :]
+
+        masque_rouge, masque_vert = self.masque_creation(crop_image)
+
+        # on récup les nouvelles height et width de l'image cropée on les a déjà mais bon c'est pour al lisibilité on va dire
         crop_h, crop_w = crop_image.shape[:2]
+
+        # =================================================================
+        # 2. EXTRACTION DES COORDONNÉES DES LIGNES
+        # =================================================================
 
         # utilisation de la fonciton get_line_centres pour récupérer le centre des lignes isolées précédemment.
         # d'abord on créé des raies horizontales d'un pixel de large tous les 10 pixels sur lesquelles on regardera 
@@ -92,9 +120,14 @@ class LineFollowing(Node):
         y_raies = range(10, crop_h - 10, 10)
 
         direction = self.get_parameter('roundabout_dir').get_parameter_value().string_value
+
         # on chope le centre du masque vert 
-        centre_vert = self.get_line_centres(masque_vert, y_raies)
-        centre_rouge = self.get_line_centres(masque_rouge, y_raies)
+        centre_vert = self.get_line_centres(masque_vert, y_raies, direction)
+        centre_rouge = self.get_line_centres(masque_rouge, y_raies, direction)
+
+        # =================================================================
+        # 3. CALCUL DE LA TRAJECTOIRE ET DE LA CIBLE
+        # =================================================================
 
         chemin_x = []
         chemin_y = []
@@ -106,14 +139,24 @@ class LineFollowing(Node):
 
             # si les on a des moyennes de positions pour les 2 couleurs, alors
             if x_vert is not None and x_rouge is not None:
-                # on check si la ligne rouge est bien à droite de la ligne verte
-                if x_rouge > x_vert:
-                    alpha = 0.1
+                ecart = x_rouge - x_vert
+                # l'ilot du rond point est très ennuyant, MAIS comme on calcule la largeur de la route on peut 'facilement' le détecter
+                # on dit que si la largeur de la route est inhabituellement plus grande que l'écart entre les milieux des clusters, 
+                # alors on est face à l'ilot ! auquel cas, 
+                if ecart < (self.memoire_ligne_width * 0.6):
+                    if direction == 'right':
+                        # On veut passer à droite : on place la cible virtuellement à DROITE du rouge de l'îlot
+                        vx = x_rouge + (self.memoire_ligne_width / 2.0)
+                    else:
+                        # On veut passer à gauche : on place la cible virtuellement à GAUCHE du vert de l'îlot
+                        vx = x_vert - (self.memoire_ligne_width / 2.0)
+                else:
+                    alpha = 0.3
                     # inspiré du RL, plutot que de brutalement changer la valeur de la dernière largeur de passage mesurée, 
                     # on fait une sorte de bootstrapping pour faire une sorte de moyenne glissante.
                     self.memoire_ligne_width = alpha * (x_rouge - x_vert) + (1 - alpha) * self.memoire_ligne_width
 
-                vx = (x_vert + x_rouge) / 2.0
+                    vx = (x_vert + x_rouge) / 2.0
                 chemin_x.append(vx)
                 chemin_y.append(y)
 
@@ -134,8 +177,10 @@ class LineFollowing(Node):
         cible_x = self.last_cible_x
         futur_y = int(crop_h * 0.3)
 
+        twist = Twist()
+
         if len(chemin_y) >= 3:
-            # on calcule un polynome de degré 3 qui passe par les points du chemin x,y
+            # on calcule un polynome de degré 2 qui passe par les points du chemin x,y
             poly = np.polyfit(chemin_y, chemin_x, 2)
             
             # ensuite on demande la valeur de x, la prochaine cible, en y_futur pour l'anticipation 
@@ -146,41 +191,39 @@ class LineFollowing(Node):
             pts = []
             for y in range(0, crop_h, 5):
                 x = int(np.polyval(poly, y))
-                pts.append([x, y + crop_top])
+                pts.append([x, y + crop_h])
             pts = np.array(pts, np.int32)
             pts = pts.reshape((-1, 1, 2))
-            cv2.polylines(cv_image, [pts], False, (0, 0, 255), 2)
+            cv2.polylines(cv_image, [pts], False, (0, 255, 255), 2)
         
-        # plan de secours si on a pas assez de points dans le chemin, on prend juste la moyenne des coords de x
-        # pour s'orienter grossièrement 
-        elif len(chemin_y) > 0:
-            cible_x = np.mean(chemin_x)
-            self.last_cible_x = cible_x
+        # =================================================================
+        # 4. GESTION DU MODE PERDU ET COMMANDE DU ROBOT
+        # =================================================================
 
-        # on calcule l'erreur entre le centre de la caméra (là où regarde le robot) et la 
-        # cible (là où devrait reagrder le robot)
         cam_centre = crop_w / 2.0
-        error_x = cam_centre - cible_x
 
-        twist = Twist()
-        kp_x = 0.005
-        angular = float(error_x * kp_x)
-
-        if len(chemin_y) == 0:
-            # si le robot n'a plus de route on le fait avancer tout doux pour qu'il en retrouve une.
+        if len(chemin_y) < 3:
+            # Si pas assez de points pour tracer une trajectoire fiable
             twist.linear.x = 0.05
+            twist.angular.z = 0.
+            # affichage pour voir s'il rentre ici
+            cv2.putText(cv_image, "PERDU - RECHERCHE", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
-            # s'il a une route alors on prend le max entre sa vitesse sans route et la différence entre sa vitesse 
-            # max et le braquage qu'il doit faire. Ceci permet de ralentir sa vitesse linéaire quand il tourne.
-            twist.linear.x = max(0.05, 0.15 - 0.5 * abs(angular))
+            error_x = cam_centre - cible_x
+            kp_x = 0.005
+            angular = float(error_x * kp_x)
 
-        twist.angular.z = angular
+            # On ralentit la vitesse linéaire quand il tourne pour plus de stabilité
+            twist.linear.x = max(0.05, 0.15 - 0.5 * abs(angular))
+            twist.angular.z = angular
+
+        # On publie la commande (qu'elle soit issue du mode perdu ou normal)
         self.publisher_.publish(twist)
 
         # un peu de dessin pour la beautéééééé
-        cv2.line(cv_image, (0, crop_top), (width, crop_top), (255, 0, 255), 2)
+        cv2.line(cv_image, (0, crop_top), (width, crop_top), (0, 0, 0), 2)
         draw_y = crop_top + futur_y if len(chemin_y) >= 3 else crop_top + int(crop_h/2)
-        cv2.circle(cv_image, (int(cible_x), draw_y), 7, (255, 0, 0), -1)
+        cv2.circle(cv_image, (int(cible_x), draw_y), 7, (0, 255, 255), -1)
 
         masque_total = cv2.bitwise_or(masque_vert, masque_rouge)
         cv2.imshow("masque", masque_total)

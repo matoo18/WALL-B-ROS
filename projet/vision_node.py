@@ -97,16 +97,20 @@ class VisionNode(Node):
         # pour ne pas que l'algo ne prenne en compte les lignes lointaines trop tot
         height, width, _ = cv_image.shape
 
+        crop_top = int(height * 0.8) # on peut jouer sur 0.5 pour voir à quel point on peut anticiper
+        crop_image = cv_image[crop_top:height, :]
+        _,_, masque_bleu = self.masque_creation(crop_image)
+
         # jeu de mot drole
         crop_top = int(height * 0.5) # on peut jouer sur 0.5 pour voir à quel point on peut anticiper
         crop_image = cv_image[crop_top:height, :]
 
-        masque_rouge, masque_vert, masque_bleu = self.masque_creation(crop_image)
+        masque_rouge, masque_vert, _ = self.masque_creation(crop_image)
 
         nb_pixels_bleus = cv2.countNonZero(masque_bleu)
         
         msg_blue = Bool()
-        # Si on a plus de 200 pixels bleus horizontaux, on considère la ligne franchie
+        # Si on a plus de 200 pixels bleus horizontaux
         if nb_pixels_bleus > 200:
             msg_blue.data = True
             cv2.putText(cv_image, "LIGNE BLEUE DETECTEE!", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)

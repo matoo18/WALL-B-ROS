@@ -10,7 +10,7 @@ import numpy as np
 from nav_msgs.msg import Odometry #Odometry (Current Robot Position)
 from sensor_msgs.msg import LaserScan #Lidar Messages
 from geometry_msgs.msg import Twist, Point #Twist Message for velocity control
-
+from std_msgs.msg import Int32
 #from std_msgs.msg import Float32MultiArray
 
 import math
@@ -26,8 +26,10 @@ class ControllerNode(Node):
         self.odometrySubscriber = self.create_subscription(Odometry, '/odom', self.odom_callback,10)
         self.sensorSubscriber = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.visionSubscriber = self.create_subscription(Point, '/vision_target', self.vision_callback, 10)
+        self.challengeSubscriber = self.create_subscription(Int32, '/num_challenge', self.vision_callback, 10)
 
         #Messages Init
+        self.etat_actuel = 1
         self.odomMsg = Odometry()
         self.sensorMsg = LaserScan()
         self.controlMsg = Twist()
@@ -46,6 +48,9 @@ class ControllerNode(Node):
         self.maximum_repulsive_force_distance = 0.5
 
         self.k_angle = 0.5
+
+    def state_callback(self, msg):
+        self.etat_actuel = msg.data
 
     def odom_callback(self,msg):
         self.odomMsg = msg
@@ -143,68 +148,89 @@ class ControllerNode(Node):
         return xo,yo
         
     def computeVelocity(self):
-        rPos, rOrient = self.get_Robot_Pose()
-        xObjects,yObjects = self.detect_Obstacles(rPos,rOrient)
+        # coming soon ... 
+        # if self.etat_actuel != 2:
+        #     return
 
-        xRobot = rPos.x
-        yRobot = rPos.y
-        posRobot = np.array([xRobot,yRobot])
-
-        # #Attractive Force Generation:
-        # #To have an attractive force, there needs to be an objective for the robot to follow, for the time being, it's a point that always 0.25m infront of it.
-        # point_distance = 0.25 #m
-        # x_desired = xRobot + point_distance*np.cos(rOrient)
-        # y_desired = yRobot + point_distance*np.sin(rOrient)
-        # desired_Point = np.array([x_desired, y_desired])
-
-        # attractionForce = - self.ka*(posRobot - desired_Point)
-
-        # j'ai essayé de combiner nos 2 codes en modifiant uniquement ta variable d'attraction pour essayer de la modifiée dynamiquement avec mon topic
-        # de suivi de ligne mais ça marche pas pour l'instant mdr.
-        # On calcule l'angle désiré depuis l'erreur visuelle
+        # ==========================================================
+        # LOGIQUE DE VISION 
+        # ==========================================================
         error_x = self.vision_cam_centre - self.vision_cible_x
         vision_angular = float(error_x * 0.005)
-        
-        # On place notre aimant d'attraction dans la direction de la courbe
-        point_distance = 0.25 
-        desired_angle = rOrient + vision_angular
-        desired_Point = np.array([rPos.x + point_distance * np.cos(desired_angle),
-                                    rPos.y + point_distance * np.sin(desired_angle)])
 
-        attractionForce = - self.ka * (posRobot - desired_Point)
+        # ==========================================================
+        # LOGIQUE D'ESQUIVE 
+        # ==========================================================
+        rPos, rOrient = self.get_Robot_Pose()
+        xObjects, yObjects = self.detect_Obstacles(rPos, rOrient)
         
-        #Repulsive force generation
-        repulsiveForce = np.zeros(2,)
+        avoidance_angular = 0.0
+        
         for i in range(len(xObjects)):
-            objPos = np.array([xObjects[i],yObjects[i]])
-            distance = np.linalg.norm(posRobot - objPos)
-            if(distance <= self.maximum_repulsive_force_distance):
-                forceNorm = self.kr*((1/self.maximum_repulsive_force_distance) -(1/distance))*(1/(distance)**2)
-                repulsiveForce -= forceNorm*(posRobot - objPos)
+            # distance entre le robot et chacun des obstacles grace pytha
+            dx = xObjects[i] - rPos.x
+            dy = yObjects[i] - rPos.y
+            distance = math.hypot(dx, dy)
+            
+            # obstacle dans la zone de sécurité ?
+            if distance <= self.maximum_repulsive_force_distance:
+                
+                # TOA : calcul de l'angle entre l'hypothénuse et la ligne horizontale imaginaire entre la position x de l'objet et la projection d ela posx du robot
+                # arrctan2 retourne un angle entre -pi et pi
+                global_angle = np.arctan2(dy, dx)
+                # on a calculé l'angle entre l'horizontale et l'obstacle et on a aussi l'orientation du robot selon l'horizontale
+                # du coup, on soustrayant les 2 on trouve l'angle entre l'obstacle et l'orientation du robot
+                theta = global_angle - rOrient
+                
+                # angle entre -pi et pi 
+                theta = (theta + np.pi) % (2 * np.pi) - np.pi
+                
+                # si l'obstacle est à plus de 90° alors ça veut dire qu'il derrière à gauche du robot donc on s'en occupe pas ou plus
+                # pareil pour -90° ça veut dire qu'il est derrière à droite donc on s'en occupe pas ou plus non plus 
+                if abs(theta) < (np.pi / 2):
+                    
+                    # plus on est près, plus on veut réagir fortement donc on créé un pods
+                    poids_dist = (self.maximum_repulsive_force_distance - distance) / self.maximum_repulsive_force_distance
+                    
+                    # ensuite en fonction de la projection de l'angle on va aussi vouloir pousser plus ou moins fort
+                    impact_angle = math.cos(theta)
+                    
+                    # Si theta > 0 = obstacle à gauche, on tourne à droite -1
+                    # Si theta < 0 = obstacle à droite, on tourne à gauche +1
+                    direction = -1.0 if theta > 0 else 1.0
+                    
+                    # si pile en face je mets par défaut qu'on tourne à gauche
+                    # (c'est un peu de la tricche parce que je sais que dans le parcours c'est le cas qui peut potentiellement arriver.)
+                    if abs(theta) < 0.05:
+                        direction = 1.0 
+                        
+                    # Calcul de la commande de répulsion
+                    repulsion = direction * poids_dist * impact_angle
+                    
+                    # si y'a plusieurs obstacles on garde celui dont la répulsion est la plus forte. On pourrait aussi le modifier avec des sortes de poids mais ça fait le taf.
+                    if abs(repulsion) > abs(avoidance_angular):
+                        avoidance_angular = repulsion
 
-        controlForce = attractionForce + repulsiveForce
-
-        goal_Orientation = np.arctan2(controlForce[1],controlForce[0])
+        # ==========================================================
+        # COMBINAISON RÉPULSION ET VISION
+        # ==========================================================
+        # gain évitement (empirique)
+        K_avoid = 2
         
-        angleError = self.angular_error(rOrient,goal_Orientation)
+        final_angular_velocity = vision_angular + (K_avoid * avoidance_angular)
 
-        angular_velocity = self.k_angle*angleError
-        linear_velocity = np.linalg.norm(controlForce)
-        if(np.abs(linear_velocity) > 2.0):
-            linear_velocity = 2.0
-        
-        #print(linear_velocity)
-        #print(angular_velocity)
+        # je réutilise ma logique de proportion que j'ai utilisé pour l'épreuve 1
+        linear_velocity = 0.15 - 0.4 * abs(final_angular_velocity)
+        linear_velocity = max(0.05, min(0.15, linear_velocity))
 
-        self.controlMsg.linear.x = linear_velocity
+        self.controlMsg.linear.x = float(linear_velocity)
         self.controlMsg.linear.y = 0.0
         self.controlMsg.linear.z = 0.0
         self.controlMsg.angular.x = 0.0
         self.controlMsg.angular.y = 0.0
-        self.controlMsg.angular.z = angular_velocity
+        self.controlMsg.angular.z = float(final_angular_velocity)
         
         self.controlPublisher.publish(self.controlMsg)
-
 
 def main(args=None):
     try:

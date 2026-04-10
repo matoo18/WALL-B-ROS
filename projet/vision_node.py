@@ -83,7 +83,7 @@ class VisionNode(Node):
 
     def image_callback(self, msg):
         # =================================================================
-        # 1. ACQUISITION ET PRÉTRAITEMENT DE L'IMAGE
+        # ACQUISITION ET PRÉTRAITEMENT DE L'IMAGE
         # =================================================================
 
         # conversion pour la lecture
@@ -119,7 +119,7 @@ class VisionNode(Node):
         crop_h, crop_w = crop_image.shape[:2]
 
         # =================================================================
-        # 2. EXTRACTION DES COORDONNÉES DES LIGNES
+        # EXTRACTION DES COORDONNÉES DES LIGNES
         # =================================================================
 
         # utilisation de la fonciton get_line_centre pour récupérer le centre des lignes isolées précédemment.
@@ -134,7 +134,7 @@ class VisionNode(Node):
         centre_rouge = self.get_line_centre(masque_rouge, y_raies)
 
         # =================================================================
-        # 3. CALCUL DE LA TRAJECTOIRE ET DE LA CIBLE
+        # CALCUL DE LA TRAJECTOIRE ET DE LA CIBLE
         # =================================================================
 
         chemin_x = []
@@ -224,9 +224,6 @@ class VisionNode(Node):
         cv2.imshow("masque", masque_total)
         cv2.imshow("Vue du robot", cv_image)
         cv2.waitKey(1)
-
-    def challenge_callback(self, msg):
-        pass
 
 def main(args=None):
     rclpy.init(args=args)

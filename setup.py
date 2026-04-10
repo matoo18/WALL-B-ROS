@@ -29,6 +29,8 @@ setup(
             'obstacle = projet.velocity_controller:main' ,
             'hsv = projet.hsv_calibration:main',
             'STOP = projet.em_stop:main',
+            'platini = projet.cdm2026:main',
+            'maestro = projet.maestro:main',
         ],
     },
 )

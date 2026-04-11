@@ -1,16 +1,17 @@
-import rclpy
+"""import rclpy
 from rclpy.node import Node
-import click
+
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float32MultiArray
 from geometry_msgs.msg import Twist
+
 import threading
 import copy
-
+import click
 import numpy as np
 
 
-class velocityControl(Node):
+class VelocityControl(Node):
     def __init__(self):
         super().__init__('lds_distance')
 
@@ -38,3 +39,4 @@ def main(args=None):
 if __name__ == '__main__':
     main()
 
+"""

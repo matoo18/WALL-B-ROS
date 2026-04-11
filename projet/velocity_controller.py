@@ -26,7 +26,7 @@ class ControllerNode(Node):
         self.odometrySubscriber = self.create_subscription(Odometry, '/odom', self.odom_callback,10)
         self.sensorSubscriber = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.visionSubscriber = self.create_subscription(Point, '/vision_target', self.vision_callback, 10)
-        self.challengeSubscriber = self.create_subscription(Int32, '/num_challenge', self.vision_callback, 10)
+        self.challengeSubscriber = self.create_subscription(Int32, '/active_state', self.state_callback, 10)
 
         #Messages Init
         self.etat_actuel = 1
@@ -148,9 +148,8 @@ class ControllerNode(Node):
         return xo,yo
         
     def computeVelocity(self):
-        # coming soon ... 
-        # if self.etat_actuel != 2:
-        #     return
+        if self.etat_actuel != 2:
+            return
 
         # ==========================================================
         # LOGIQUE DE VISION 

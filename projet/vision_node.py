@@ -1,11 +1,13 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
+
 from sensor_msgs.msg import CompressedImage
-from geometry_msgs.msg import Point
-from std_msgs.msg import Bool
+from geometry_msgs.msg import Point, Twist
+from std_srvs.srv import Trigger 
+
 import cv2
 import numpy as np
+import time
 
 class VisionNode(Node):
     def __init__(self):
@@ -15,7 +17,12 @@ class VisionNode(Node):
 
         # Cration du publisher pour pouvoir publier les vitesses sur le topic /cmd_vel
         self.targetPublisher = self.create_publisher(Point, '/vision_target', 10)
-        self.challengePublisher = self.create_publisher(Bool, '/switch_challenge', 10)
+
+        # on utilise un client pour appeler un service 
+        self.client = self.create_client(Trigger, '/next_challenge')
+        
+        # ce sera pour éviter de bloquer le noeud quand on voit une ligne et qu'on appelle le service
+        self.last_service_call_time = 0.0
         
         # attributs de mémoire qui seront utiles lorsqu'une ligne disparaitra du champs de vision de la caméra
         self.memoire_ligne_width = 300.0
@@ -97,27 +104,33 @@ class VisionNode(Node):
         # pour ne pas que l'algo ne prenne en compte les lignes lointaines trop tot
         height, width, _ = cv_image.shape
 
-        crop_top = int(height * 0.8) # on peut jouer sur 0.5 pour voir à quel point on peut anticiper
-        crop_image = cv_image[crop_top:height, :]
-        _,_, masque_bleu = self.masque_creation(crop_image)
-
         # jeu de mot drole
         crop_top = int(height * 0.5) # on peut jouer sur 0.5 pour voir à quel point on peut anticiper
         crop_image = cv_image[crop_top:height, :]
 
         masque_rouge, masque_vert, _ = self.masque_creation(crop_image)
 
-        nb_pixels_bleus = cv2.countNonZero(masque_bleu)
-        
-        msg_blue = Bool()
-        # Si on a plus de 200 pixels bleus horizontaux
-        if nb_pixels_bleus > 200:
-            msg_blue.data = True
+        # masque sur une plus petite partie de l'image car on veut que le challenge switch le plus tard possible.
+        crop_top_bleu = int(height * 0.8) 
+        crop_image_bleu = cv_image[crop_top_bleu:height, :]
+
+        _,_, masque_bleu_proche = self.masque_creation(crop_image_bleu)
+        nb_pixels_bleus_proches = cv2.countNonZero(masque_bleu_proche)
+
+        if nb_pixels_bleus_proches > 1e3:
+            cv2.line(cv_image, (0, crop_top_bleu), (width, crop_top_bleu), (0, 0, 0), 2)
             cv2.putText(cv_image, "LIGNE BLEUE DETECTEE!", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-        else:
-            msg_blue.data = False
-            
-        self.challengePublisher.publish(msg_blue)
+
+            current_time = time.time()
+            # on utilise un service 
+            if (current_time - self.last_service_call_time) > 1.0:
+                if self.client.wait_for_service(timeout_sec=0.1):
+                    req = Trigger.Request()
+                    # besoin d'async sinon la caméra se bloque
+                    self.future = self.client.call_async(req)
+                    self.last_service_call_time = current_time
+                else:
+                    self.get_logger().warning('Maestro pas lancé ...')
 
         # on récup les nouvelles height et width de l'image cropée on les a déjà mais bon c'est pour al lisibilité on va dire
         crop_h, crop_w = crop_image.shape[:2]
@@ -226,6 +239,7 @@ class VisionNode(Node):
         cv2.line(cv_image, (0, crop_top), (width, crop_top), (0, 0, 0), 2)
         masque_total = cv2.bitwise_or(masque_vert, masque_rouge)
         cv2.imshow("masque", masque_total)
+        cv2.imshow("bleu", masque_bleu_proche)
         cv2.imshow("Vue du robot", cv_image)
         cv2.waitKey(1)
 

@@ -10,10 +10,12 @@ import numpy as np
 import time
 
 class VisionNode(Node):
-    def __init__(self):
+    def __init__(self): 
         super().__init__('LineFollowing')
+        # c'est pas le meme nom de topic pour le robot réel et la sim donc on fait comme ça 
+        self.declare_parameter('cam_topic', '/image_raw/compressed')
         # on s'abonne au topic qui publie les images compressées reçues de la caméra
-        self.image_subscription = self.create_subscription(CompressedImage,'/image_raw/compressed',self.image_callback,10)
+        self.image_subscription = self.create_subscription(CompressedImage,,self.image_callback,10)
 
         # Cration du publisher pour pouvoir publier les vitesses sur le topic /cmd_vel
         self.targetPublisher = self.create_publisher(Point, '/vision_target', 10)

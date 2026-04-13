@@ -4,16 +4,18 @@ from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import Point, Twist
 from std_srvs.srv import Trigger 
+from std_msgs.msg import Int32MultiArray
 
 import cv2
 import numpy as np
 import time
+import threading
 
 class VisionNode(Node):
     def __init__(self):
         super().__init__('LineFollowing')
         # on s'abonne au topic qui publie les images compressées reçues de la caméra
-        self.image_subscription = self.create_subscription(CompressedImage,'/image_raw/compressed',self.image_callback,10)
+        self.image_subscription = self.create_subscription(CompressedImage,'camera/image_raw/compressed',self.image_callback,10)
 
         # Cration du publisher pour pouvoir publier les vitesses sur le topic /cmd_vel
         self.targetPublisher = self.create_publisher(Point, '/vision_target', 10)
@@ -31,7 +33,40 @@ class VisionNode(Node):
         # on déclare un paramètre pour pouvoir choisir dans quel sens prendre le rond-point
         self.declare_parameter('roundabout_dir', 'right')
 
-        self.is_searching = False
+        self.hsv_subscription = self.create_subscription(Int32MultiArray, '/live_hsv', self.hsv_callback, 10)
+        
+        self.current_image = None
+        # Valeurs HSV par défaut
+        self.bas_bleu = np.array([90, 25, 0])
+        self.haut_bleu = np.array([150, 255, 255])
+        
+        self.bas_vert = np.array([35, 30, 140])
+        self.haut_vert = np.array([110, 255, 255])
+        
+        self.bas_rouge1 = np.array([0, 20, 0])
+        self.haut_rouge1 = np.array([11, 255, 255])
+        
+        self.bas_rouge2 = np.array([168, 50, 0])
+        self.haut_rouge2 = np.array([179, 255, 255])
+
+        cv2.namedWindow("masque", cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow("Vue du robot", cv2.WINDOW_AUTOSIZE)
+
+    def hsv_callback(self, msg):
+        valeurs = msg.data
+        if len(valeurs) == 24:
+            
+            self.bas_vert = np.array(valeurs[0:3], dtype=np.int32)
+            self.haut_vert = np.array(valeurs[3:6], dtype=np.int32)
+            
+            self.bas_rouge1 = np.array(valeurs[6:9], dtype=np.int32)
+            self.haut_rouge1 = np.array(valeurs[9:12], dtype=np.int32)
+            
+            self.bas_rouge2 = np.array(valeurs[12:15], dtype=np.int32)
+            self.haut_rouge2 = np.array(valeurs[15:18], dtype=np.int32)
+
+            self.bas_bleu = np.array(valeurs[18:21], dtype=np.int32)
+            self.haut_bleu = np.array(valeurs[21:24], dtype=np.int32)
 
     def get_line_centre(self, masque, y_raies):
         centres = {}
@@ -52,28 +87,16 @@ class VisionNode(Node):
         hsv_image = cv2.cvtColor(crop_image, cv2.COLOR_BGR2HSV)
 
         # création des masques, on a utilisé le noeud hsv_calibration avec les trackbars pour trouver les valeurs
-        bas_bleu = np.array([90, 25, 0])
-        haut_bleu = np.array([150, 255, 255])
-        masque_bleu = cv2.inRange(hsv_image, bas_bleu, haut_bleu)
+        masque_bleu = cv2.inRange(hsv_image, self.bas_bleu, self.haut_bleu)
 
         kernel_horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 3))
         masque_bleu = cv2.morphologyEx(masque_bleu, cv2.MORPH_OPEN, kernel_horiz)
 
-        bas_vert = np.array([40, 30, 10])
-        haut_vert = np.array([90, 255, 255])
-        masque_vert = cv2.inRange(hsv_image, bas_vert, haut_vert)
+        masque_vert = cv2.inRange(hsv_image, self.bas_vert, self.haut_vert)
 
-        # pour des raisons de mémoire, les valeurs demandées par la fonction de cv2 doivent etre contenues dans 
-        # 1 octet donc pour la saturation et la luminosité c'est carré mais pour le Hue on divise simplement par 2
-        # mais du coup la zone de rouge se retrouve coupée en 2 d'où la nécessité des 2 masques.
-        bas_rouge1 = np.array([0, 70, 50])
-        haut_rouge1 = np.array([10, 255, 255])
-        bas_rouge2 = np.array([170, 70, 50])
-        haut_rouge2 = np.array([180, 255, 255])
-
-        # on fusionne les 2 masques avec bitwise_or qui garde tous les pixels des 2 masques 
-        masque_rouge = cv2.bitwise_or(cv2.inRange(hsv_image, bas_rouge1, haut_rouge1), 
-                                  cv2.inRange(hsv_image, bas_rouge2, haut_rouge2))
+        # on fusionne les 2 masques rouges avec les valeurs mises à jour en direct
+        masque_rouge = cv2.bitwise_or(cv2.inRange(hsv_image, self.bas_rouge1, self.haut_rouge1), 
+                                      cv2.inRange(hsv_image, self.bas_rouge2, self.haut_rouge2))
 
         # nous donne un kernel en forme de cercle pour que ce soit plus smooth sur les bords qu'un kernel rectangulaire.
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -86,19 +109,21 @@ class VisionNode(Node):
 
         masque_rouge = cv2.morphologyEx(masque_rouge, cv2.MORPH_CLOSE, kernel)
         masque_rouge = cv2.morphologyEx(masque_rouge, cv2.MORPH_OPEN, kernel)
+
         return masque_rouge, masque_vert, masque_bleu
 
     def image_callback(self, msg):
+        np_arr = np.frombuffer(msg.data, np.uint8)
+        self.current_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        self.get_logger().info('📸 Image reçue !', once=True)
+
+    def process_and_display(self):
         # =================================================================
         # ACQUISITION ET PRÉTRAITEMENT DE L'IMAGE
-        # =================================================================
+        # ================================================================= 
+        if self.current_image is None: return
 
-        # conversion pour la lecture
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-        if cv_image is None:
-            return
+        cv_image = self.current_image.copy()
 
         # on prend les dimensions qui permettront de croper l'image pour ne garder que le bas de celle-ci
         # pour ne pas que l'algo ne prenne en compte les lignes lointaines trop tot
@@ -130,6 +155,7 @@ class VisionNode(Node):
                     self.future = self.client.call_async(req)
                     self.last_service_call_time = current_time
                 else:
+                    self.last_service_call_time = current_time
                     self.get_logger().warning('Maestro pas lancé ...')
 
         # on récup les nouvelles height et width de l'image cropée on les a déjà mais bon c'est pour al lisibilité on va dire
@@ -168,20 +194,20 @@ class VisionNode(Node):
                 # l'ilot du rond point est très ennuyant, MAIS comme on calcule la largeur de la route on peut 'facilement' le détecter
                 # on dit que si la largeur de la route est inhabituellement plus grande que l'écart entre les milieux des clusters, 
                 # alors on est face à l'ilot ! auquel cas, 
-                if ecart < (self.memoire_ligne_width * 0.6):
+                """if ecart < (self.memoire_ligne_width * 0.6):
                     if direction == 'right':
                         # On veut passer à droite : on place la cible virtuellement à DROITE du rouge de l'îlot
                         vx = x_rouge + (self.memoire_ligne_width)
                     else:
                         # On veut passer à gauche : on place la cible virtuellement à GAUCHE du vert de l'îlot
                         vx = x_vert - (self.memoire_ligne_width)
-                else:
-                    alpha = 0.5
-                    # inspiré du RL, plutot que de brutalement changer la valeur de la dernière largeur de passage mesurée, 
-                    # on fait une sorte de bootstrapping pour faire une sorte de moyenne glissante.
-                    self.memoire_ligne_width = alpha * (x_rouge - x_vert) + (1 - alpha) * self.memoire_ligne_width
+                else:"""
+                alpha = 0.5
+                # inspiré du RL, plutot que de brutalement changer la valeur de la dernière largeur de passage mesurée, 
+                # on fait une sorte de bootstrapping pour faire une sorte de moyenne glissante.
+                self.memoire_ligne_width = alpha * ecart + (1 - alpha) * self.memoire_ligne_width
 
-                    vx = (x_vert + x_rouge) / 2.0
+                vx = (x_vert + x_rouge) / 2.0
                 chemin_x.append(vx)
                 chemin_y.append(y)
 
@@ -238,16 +264,24 @@ class VisionNode(Node):
 
         cv2.line(cv_image, (0, crop_top), (width, crop_top), (0, 0, 0), 2)
         masque_total = cv2.bitwise_or(masque_vert, masque_rouge)
+
+        cv2.imshow("vert", masque_vert)
+        cv2.imshow("rouge", masque_rouge)
         cv2.imshow("masque", masque_total)
-        cv2.imshow("bleu", masque_bleu_proche)
         cv2.imshow("Vue du robot", cv_image)
         cv2.waitKey(1)
+
 
 def main(args=None):
     rclpy.init(args=args)
     node = VisionNode()
+
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            node.process_and_display()
+            cv2.waitKey(30)
     except KeyboardInterrupt:
         pass
     finally:

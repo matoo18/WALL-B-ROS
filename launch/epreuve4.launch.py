@@ -48,7 +48,7 @@ def generate_launch_description():
     pkg_projet2025 = get_package_share_directory('projet2025')
 
     x_pose_arg = DeclareLaunchArgument(
-        'x_pose', default_value='-0.08',
+        'x_pose', default_value='0.0',
         description='x coordinate of spawned robot'
     )
 

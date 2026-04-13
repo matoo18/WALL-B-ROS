@@ -30,7 +30,7 @@ class MaestroNode(Node):
             self.current_challenge += 1
             self.last_franchis = current_time
             
-            self.get_logger().info(f"Ligne bleue détectée, on passe au challenge {self.current_challenge} ==")
+            self.get_logger().info(f"Ligne bleue détectée, on passe au challenge {self.current_challenge}")
             
             # réponse à renvoyer à vision 
             response.success = True

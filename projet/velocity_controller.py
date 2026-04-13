@@ -219,8 +219,8 @@ class ControllerNode(Node):
         final_angular_velocity = vision_angular + (K_avoid * avoidance_angular)
 
         # je réutilise ma logique de proportion que j'ai utilisé pour l'épreuve 1
-        linear_velocity = 0.15 - 0.4 * abs(final_angular_velocity)
-        linear_velocity = max(0.05, min(0.15, linear_velocity))
+        linear_velocity = 0.22 - 0.4 * abs(final_angular_velocity)
+        linear_velocity = max(0.05, min(0.22, linear_velocity))
 
         self.controlMsg.linear.x = float(linear_velocity)
         self.controlMsg.linear.y = 0.0
